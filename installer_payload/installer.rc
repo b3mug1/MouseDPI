@@ -1,7 +1,0 @@
-#include "resource_ids.h"
-
-IDR_BIN_MOUSECONTROL     RCDATA "MouseControl.exe"
-IDR_BIN_DEVICE_INSPECTOR RCDATA "device_inspector.exe"
-IDR_BIN_FMT_DLL          RCDATA "fmt.dll"
-IDR_BIN_SPDLOG_DLL       RCDATA "spdlog.dll"
-IDR_BIN_SQLITE3_DLL      RCDATA "sqlite3.dll"

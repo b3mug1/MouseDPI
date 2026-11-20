@@ -32,4 +32,5 @@ mousecontrol.db
 # Distribution packages
 dist/
 package/
+installer_payload/
 *.zip
