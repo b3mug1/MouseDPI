@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: windows-2022
 
     steps:
     - name: Checkout repository
@@ -26,6 +26,19 @@ jobs:
         key: ${{ runner.os }}-vcpkg-${{ hashFiles('vcpkg.json') }}
         restore-keys: |
           ${{ runner.os }}-vcpkg-
+
+    - name: Fetch vcpkg baseline
+      shell: pwsh
+      run: |
+        $baseline = (Get-Content vcpkg.json | ConvertFrom-Json).'builtin-baseline'
+        git -C $env:VCPKG_INSTALLATION_ROOT fetch --no-tags origin $baseline
+        if ($LASTEXITCODE -ne 0) {
+          throw "Failed to fetch vcpkg baseline commit $baseline"
+        }
+        git -C $env:VCPKG_INSTALLATION_ROOT cat-file -e "$($baseline):versions/baseline.json"
+        if ($LASTEXITCODE -ne 0) {
+          throw "vcpkg baseline commit $baseline does not contain versions/baseline.json"
+        }
 
     - name: Configure CMake
       run: >
