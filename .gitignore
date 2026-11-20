@@ -1,0 +1,35 @@
+# Build output
+build/
+bin/
+out/
+*.dir/
+
+# vcpkg
+vcpkg_installed/
+.vcpkg/
+
+# Visual Studio / MSVC artifacts
+.vs/
+*.user
+*.suo
+*.pdb
+*.ilk
+*.obj
+*.lib
+*.exp
+*.exe
+
+# Logs
+logs/
+*.log
+
+# Database runtime files
+mousecontrol.db
+*.db
+*.db-shm
+*.db-wal
+
+# Distribution packages
+dist/
+package/
+*.zip
