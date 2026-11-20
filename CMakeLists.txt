@@ -89,6 +89,7 @@ target_link_libraries(MouseControl PRIVATE
     mousecontrol_core
     shell32.lib
     comctl32.lib
+    dwmapi.lib
 )
 
 # 2. Standalone CLI Device Inspector

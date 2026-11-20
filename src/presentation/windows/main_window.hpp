@@ -100,11 +100,13 @@ private:
     void on_paint(HDC hdc);
     void switch_tab(NavTab tab);
     void update_controls_visibility();
+    void layout_controls();
     void query_memory_stats();
     void set_status_message(std::wstring msg, bool is_error = false);
 
     // Page renderers
     void render_sidebar(HDC mem_dc, int height);
+    void render_workspace(HDC mem_dc, int x, int y, int width, int height);
     void render_page_dashboard(HDC mem_dc, int x, int y, int width, int height);
     void render_page_dpi(HDC mem_dc, int x, int y, int width, int height);
     void render_page_polling_rate(HDC mem_dc, int x, int y, int width, int height);
@@ -183,15 +185,15 @@ private:
     bool status_is_error_{false};
     int staged_dpi_{800};
 
-    // GDI Dark Theme Brushes, Pens, and Fonts
-    HBRUSH bg_brush_{nullptr};         // #0E1116
-    HBRUSH sidebar_brush_{nullptr};    // #161B22
-    HBRUSH card_brush_{nullptr};       // #1F242C
-    HBRUSH card_active_brush_{nullptr};// #262C36
+    // GDI theme resources
+    HBRUSH bg_brush_{nullptr};
+    HBRUSH sidebar_brush_{nullptr};
+    HBRUSH card_brush_{nullptr};
+    HBRUSH card_active_brush_{nullptr};
     HBRUSH header_brush_{nullptr};
-    HPEN border_pen_{nullptr};         // #2D333B
-    HPEN accent_pen_{nullptr};         // #2F81F7
-    HPEN green_pen_{nullptr};          // #3FB950
+    HPEN border_pen_{nullptr};
+    HPEN accent_pen_{nullptr};
+    HPEN green_pen_{nullptr};
     HFONT font_title_{nullptr};
     HFONT font_header_{nullptr};
     HFONT font_bold_{nullptr};

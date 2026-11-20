@@ -7,13 +7,110 @@
 #include <commctrl.h>
 #include <commdlg.h>
 #include <algorithm>
+#include <array>
 #include <fstream>
 #include <sstream>
+#include <dwmapi.h>
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "comdlg32.lib")
 
 namespace mc::presentation::windows {
+namespace {
+
+constexpr COLORREF kCanvas = RGB(13, 17, 23);
+constexpr COLORREF kSidebar = RGB(16, 21, 29);
+constexpr COLORREF kPanel = RGB(23, 30, 40);
+constexpr COLORREF kPanelRaised = RGB(29, 38, 50);
+constexpr COLORREF kBorder = RGB(39, 51, 66);
+constexpr COLORREF kAccent = RGB(190, 242, 100);
+constexpr COLORREF kText = RGB(237, 242, 247);
+constexpr COLORREF kMuted = RGB(145, 158, 174);
+constexpr COLORREF kGreen = RGB(105, 220, 151);
+constexpr COLORREF kRed = RGB(255, 112, 112);
+
+void draw_text(HDC dc, HFONT font, COLORREF color, const wchar_t* text, RECT rect, UINT flags = DT_LEFT | DT_TOP | DT_SINGLELINE) {
+    SelectObject(dc, font);
+    SetTextColor(dc, color);
+    DrawTextW(dc, text, -1, &rect, flags);
+}
+
+void draw_panel(HDC dc, RECT rect, HBRUSH brush, HPEN pen, int radius = 12) {
+    SelectObject(dc, brush);
+    SelectObject(dc, pen);
+    RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, radius, radius);
+}
+
+void draw_owner_button(const DRAWITEMSTRUCT& item, bool checked = false) {
+    const UINT id = item.CtlID;
+    const bool primary = id == MainWindow::ID_BTN_REFRESH
+        || id == MainWindow::ID_BTN_DPI_APPLY
+        || id == MainWindow::ID_BTN_SAVE_SETTINGS
+        || id == MainWindow::ID_BTN_PROF_SWITCH
+        || id == MainWindow::ID_BTN_PROF_NEW;
+    const bool checkbox = id >= MainWindow::ID_CHK_STARTUP && id <= MainWindow::ID_CHK_NOTIFY;
+    const bool disabled = (item.itemState & ODS_DISABLED) != 0;
+    const bool pressed = (item.itemState & ODS_SELECTED) != 0;
+    const COLORREF fill = disabled ? RGB(32, 38, 46)
+        : primary ? (pressed ? RGB(147, 195, 72) : kAccent)
+        : pressed ? RGB(43, 56, 71) : kPanelRaised;
+    const COLORREF foreground = primary ? kCanvas : disabled ? kMuted : kText;
+
+    HBRUSH brush = CreateSolidBrush(fill);
+    HPEN pen = CreatePen(PS_SOLID, 1, primary ? fill : kBorder);
+    HGDIOBJ old_brush = SelectObject(item.hDC, brush);
+    HGDIOBJ old_pen = SelectObject(item.hDC, pen);
+    SetBkMode(item.hDC, TRANSPARENT);
+
+    if (checkbox) {
+        RECT box{ item.rcItem.left + 2, item.rcItem.top + 5, item.rcItem.left + 21, item.rcItem.top + 24 };
+        HBRUSH box_brush = CreateSolidBrush(checked ? kAccent : kPanelRaised);
+        HPEN box_pen = CreatePen(PS_SOLID, 1, kBorder);
+        HGDIOBJ old_box_brush = SelectObject(item.hDC, box_brush);
+        HGDIOBJ old_box_pen = SelectObject(item.hDC, box_pen);
+        RoundRect(item.hDC, box.left, box.top, box.right, box.bottom, 4, 4);
+        if (checked) {
+            HPEN check_pen = CreatePen(PS_SOLID, 2, kCanvas);
+            HGDIOBJ old_check_pen = SelectObject(item.hDC, check_pen);
+            MoveToEx(item.hDC, box.left + 4, box.top + 9, nullptr);
+            LineTo(item.hDC, box.left + 8, box.top + 13);
+            LineTo(item.hDC, box.left + 16, box.top + 5);
+            SelectObject(item.hDC, old_check_pen);
+            DeleteObject(check_pen);
+        }
+        SelectObject(item.hDC, old_box_brush);
+        SelectObject(item.hDC, old_box_pen);
+        DeleteObject(box_brush);
+        DeleteObject(box_pen);
+
+        RECT label{ item.rcItem.left + 32, item.rcItem.top, item.rcItem.right, item.rcItem.bottom };
+        const int length = GetWindowTextLengthW(item.hwndItem);
+        std::wstring text(static_cast<size_t>(length) + 1, L'\0');
+        GetWindowTextW(item.hwndItem, text.data(), length + 1);
+        draw_text(item.hDC, reinterpret_cast<HFONT>(SendMessageW(item.hwndItem, WM_GETFONT, 0, 0)),
+            disabled ? kMuted : kText, text.c_str(), label, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    } else {
+        RoundRect(item.hDC, item.rcItem.left, item.rcItem.top, item.rcItem.right, item.rcItem.bottom, 9, 9);
+        const int length = GetWindowTextLengthW(item.hwndItem);
+        std::wstring text(static_cast<size_t>(length) + 1, L'\0');
+        GetWindowTextW(item.hwndItem, text.data(), length + 1);
+        draw_text(item.hDC, reinterpret_cast<HFONT>(SendMessageW(item.hwndItem, WM_GETFONT, 0, 0)),
+            foreground, text.c_str(), item.rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    }
+
+    if ((item.itemState & ODS_FOCUS) != 0) {
+        RECT focus = item.rcItem;
+        InflateRect(&focus, -4, -4);
+        DrawFocusRect(item.hDC, &focus);
+    }
+
+    SelectObject(item.hDC, old_brush);
+    SelectObject(item.hDC, old_pen);
+    DeleteObject(brush);
+    DeleteObject(pen);
+}
+
+} // namespace
 
 MainWindow::MainWindow(
     HINSTANCE hInstance,
@@ -25,22 +122,22 @@ MainWindow::MainWindow(
       profile_service_(std::move(profile_service)),
       settings_repo_(std::move(settings_repo)) {
 
-    bg_brush_          = CreateSolidBrush(RGB(14, 17, 22));   // #0E1116
-    sidebar_brush_     = CreateSolidBrush(RGB(22, 27, 34));   // #161B22
-    card_brush_        = CreateSolidBrush(RGB(31, 36, 44));   // #1F242C
-    card_active_brush_ = CreateSolidBrush(RGB(38, 44, 54));   // #262C36
-    header_brush_      = CreateSolidBrush(RGB(22, 27, 34));
-    border_pen_        = CreatePen(PS_SOLID, 1, RGB(45, 51, 59));   // #2D333B
-    accent_pen_        = CreatePen(PS_SOLID, 2, RGB(47, 129, 247)); // #2F81F7
-    green_pen_         = CreatePen(PS_SOLID, 2, RGB(63, 185, 80));  // #3FB950
+    bg_brush_          = CreateSolidBrush(kCanvas);
+    sidebar_brush_     = CreateSolidBrush(kSidebar);
+    card_brush_        = CreateSolidBrush(kPanel);
+    card_active_brush_ = CreateSolidBrush(kPanelRaised);
+    header_brush_      = CreateSolidBrush(kSidebar);
+    border_pen_        = CreatePen(PS_SOLID, 1, kBorder);
+    accent_pen_        = CreatePen(PS_SOLID, 2, kAccent);
+    green_pen_         = CreatePen(PS_SOLID, 2, kGreen);
 
-    font_title_ = CreateFontW(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+    font_title_ = CreateFontW(23, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                               OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                               DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-    font_header_ = CreateFontW(18, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+    font_header_ = CreateFontW(27, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                                OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                                DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-    font_bold_  = CreateFontW(15, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+    font_bold_  = CreateFontW(15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                               OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                               DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
     font_body_  = CreateFontW(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
@@ -109,6 +206,7 @@ void MainWindow::update_controls_visibility() {
     bool is_poll = (active_tab_ == NavTab::PollingRate);
     bool is_prof = (active_tab_ == NavTab::Profiles);
     bool is_sett = (active_tab_ == NavTab::Settings);
+    show_ctrl(btn_refresh_, active_tab_ == NavTab::Dashboard || active_tab_ == NavTab::DeviceInfo);
 
     // DPI Controls
     show_ctrl(btn_dpi_400_, is_dpi);
@@ -181,20 +279,16 @@ void MainWindow::load_settings_into_ui() {
         close_to_tray_      = s.close_to_tray;
         show_notifications_ = s.show_notifications;
 
-        if (chk_startup_)    SendMessageW(chk_startup_, BM_SETCHECK, s.start_with_windows ? BST_CHECKED : BST_UNCHECKED, 0);
-        if (chk_min_tray_)   SendMessageW(chk_min_tray_, BM_SETCHECK, s.minimize_to_tray ? BST_CHECKED : BST_UNCHECKED, 0);
-        if (chk_close_tray_) SendMessageW(chk_close_tray_, BM_SETCHECK, s.close_to_tray ? BST_CHECKED : BST_UNCHECKED, 0);
-        if (chk_notify_)     SendMessageW(chk_notify_, BM_SETCHECK, s.show_notifications ? BST_CHECKED : BST_UNCHECKED, 0);
     }
 }
 
 void MainWindow::save_settings_from_ui() {
     if (!settings_repo_) return;
     core::domain::DeviceSettings s;
-    if (chk_startup_)    s.start_with_windows = (SendMessageW(chk_startup_, BM_GETCHECK, 0, 0) == BST_CHECKED);
-    if (chk_min_tray_)   s.minimize_to_tray   = (SendMessageW(chk_min_tray_, BM_GETCHECK, 0, 0) == BST_CHECKED);
-    if (chk_close_tray_) s.close_to_tray      = (SendMessageW(chk_close_tray_, BM_GETCHECK, 0, 0) == BST_CHECKED);
-    if (chk_notify_)     s.show_notifications = (SendMessageW(chk_notify_, BM_GETCHECK, 0, 0) == BST_CHECKED);
+    s.start_with_windows = start_with_windows_;
+    s.minimize_to_tray   = minimize_to_tray_;
+    s.close_to_tray      = close_to_tray_;
+    s.show_notifications = show_notifications_;
 
     start_with_windows_ = s.start_with_windows;
     minimize_to_tray_   = s.minimize_to_tray;
@@ -302,6 +396,12 @@ bool MainWindow::create(const std::wstring& title, int width, int height) {
         return false;
     }
 
+    const BOOL use_dark_title_bar = TRUE;
+    const HRESULT theme_result = DwmSetWindowAttribute(hwnd_, 20, &use_dark_title_bar, sizeof(use_dark_title_bar));
+    if (FAILED(theme_result)) {
+        MC_DEBUG("Windows did not apply the dark title bar theme (HRESULT 0x{:X})", static_cast<unsigned long>(theme_result));
+    }
+
     // Phase 7: Register Global Hotkeys (Ctrl+Alt+D for DPI cycle, Ctrl+Alt+Up/Down for step)
     RegisterHotKey(hwnd_, ID_HOTKEY_DPI_CYCLE, MOD_CONTROL | MOD_ALT, 'D');
     RegisterHotKey(hwnd_, ID_HOTKEY_DPI_UP, MOD_CONTROL | MOD_ALT, VK_UP);
@@ -309,7 +409,7 @@ bool MainWindow::create(const std::wstring& title, int width, int height) {
 
     // Shared Header Controls
     btn_refresh_ = CreateWindowExW(
-        0, L"BUTTON", L"Refresh Devices",
+        0, L"BUTTON", L"Scan devices",
         WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_FLAT,
         width - 180, 18, 140, 32,
         hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_BTN_REFRESH)), hInstance_, nullptr
@@ -338,7 +438,7 @@ bool MainWindow::create(const std::wstring& title, int width, int height) {
 
     int dpi_y2 = 355;
     btn_dpi_minus_   = CreateWindowExW(0, L"BUTTON", L"-50", WS_TABSTOP | WS_CHILD | BS_FLAT, 240, dpi_y2, 60, 34, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_BTN_DPI_MINUS)), hInstance_, nullptr);
-    edit_dpi_custom_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"800", WS_TABSTOP | WS_CHILD | ES_NUMBER | ES_CENTER, 310, dpi_y2 + 2, 80, 30, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_EDIT_DPI_CUSTOM)), hInstance_, nullptr);
+    edit_dpi_custom_ = CreateWindowExW(0, L"EDIT", L"800", WS_TABSTOP | WS_CHILD | ES_NUMBER | ES_CENTER, 310, dpi_y2 + 2, 80, 30, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_EDIT_DPI_CUSTOM)), hInstance_, nullptr);
     btn_dpi_plus_    = CreateWindowExW(0, L"BUTTON", L"+50", WS_TABSTOP | WS_CHILD | BS_FLAT, 400, dpi_y2, 60, 34, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_BTN_DPI_PLUS)), hInstance_, nullptr);
     btn_dpi_apply_   = CreateWindowExW(0, L"BUTTON", L"Apply DPI to Hardware", WS_TABSTOP | WS_CHILD | BS_DEFPUSHBUTTON, 470, dpi_y2, 180, 34, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_BTN_DPI_APPLY)), hInstance_, nullptr);
     btn_dpi_reset_   = CreateWindowExW(0, L"BUTTON", L"Reset", WS_TABSTOP | WS_CHILD | BS_FLAT, 660, dpi_y2, 80, 34, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_BTN_DPI_RESET)), hInstance_, nullptr);
@@ -351,7 +451,7 @@ bool MainWindow::create(const std::wstring& title, int width, int height) {
     btn_rate_1000_ = CreateWindowExW(0, L"BUTTON", L"Set 1000 Hz (1ms)", WS_TABSTOP | WS_CHILD | BS_FLAT, 420, rate_y + 60, 160, 42, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_BTN_RATE_1000)), hInstance_, nullptr);
 
     // Profile Controls
-    list_profiles_      = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", L"", WS_TABSTOP | WS_CHILD | LBS_NOTIFY | WS_VSCROLL, 240, 140, 400, 260, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_LIST_PROFILES)), hInstance_, nullptr);
+    list_profiles_      = CreateWindowExW(0, L"LISTBOX", L"", WS_TABSTOP | WS_CHILD | LBS_NOTIFY | LBS_OWNERDRAWFIXED | LBS_HASSTRINGS | WS_VSCROLL, 240, 140, 400, 260, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_LIST_PROFILES)), hInstance_, nullptr);
     btn_prof_switch_    = CreateWindowExW(0, L"BUTTON", L"Activate Selected", WS_TABSTOP | WS_CHILD | BS_FLAT, 660, 140, 180, 34, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_BTN_PROF_SWITCH)), hInstance_, nullptr);
     btn_prof_new_       = CreateWindowExW(0, L"BUTTON", L"Create New Profile", WS_TABSTOP | WS_CHILD | BS_FLAT, 660, 180, 180, 34, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_BTN_PROF_NEW)), hInstance_, nullptr);
     btn_prof_duplicate_ = CreateWindowExW(0, L"BUTTON", L"Duplicate Profile", WS_TABSTOP | WS_CHILD | BS_FLAT, 660, 220, 180, 34, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_BTN_PROF_DUPLICATE)), hInstance_, nullptr);
@@ -365,6 +465,24 @@ bool MainWindow::create(const std::wstring& title, int width, int height) {
     chk_close_tray_    = CreateWindowExW(0, L"BUTTON", L"Close button minimizes to System Tray instead of exiting", WS_TABSTOP | WS_CHILD | BS_AUTOCHECKBOX, 240, 220, 450, 28, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_CHK_CLOSE_TRAY)), hInstance_, nullptr);
     chk_notify_        = CreateWindowExW(0, L"BUTTON", L"Show notifications when mice connect or disconnect", WS_TABSTOP | WS_CHILD | BS_AUTOCHECKBOX, 240, 260, 450, 28, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_CHK_NOTIFY)), hInstance_, nullptr);
     btn_save_settings_ = CreateWindowExW(0, L"BUTTON", L"Save Preferences", WS_TABSTOP | WS_CHILD | BS_DEFPUSHBUTTON, 240, 310, 180, 36, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_BTN_SAVE_SETTINGS)), hInstance_, nullptr);
+
+    const std::array<HWND, 27> buttons{
+        btn_refresh_, btn_dpi_400_, btn_dpi_800_, btn_dpi_1200_, btn_dpi_1600_,
+        btn_dpi_2400_, btn_dpi_3200_, btn_dpi_6400_, btn_dpi_minus_, btn_dpi_plus_,
+        btn_dpi_apply_, btn_dpi_reset_, btn_rate_125_, btn_rate_250_, btn_rate_500_,
+        btn_rate_1000_, btn_prof_switch_, btn_prof_new_, btn_prof_duplicate_,
+        btn_prof_delete_, btn_prof_export_, btn_prof_import_, chk_startup_, chk_min_tray_,
+        chk_close_tray_, chk_notify_, btn_save_settings_
+    };
+    for (HWND button : buttons) {
+        LONG_PTR style = GetWindowLongPtrW(button, GWL_STYLE);
+        SetWindowLongPtrW(button, GWL_STYLE, (style & ~BS_TYPEMASK) | BS_OWNERDRAW);
+        SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(font_body_), TRUE);
+    }
+    SendMessageW(edit_dpi_custom_, WM_SETFONT, reinterpret_cast<WPARAM>(font_body_), TRUE);
+    SendMessageW(slider_dpi_, WM_SETFONT, reinterpret_cast<WPARAM>(font_body_), TRUE);
+    SendMessageW(list_profiles_, WM_SETFONT, reinterpret_cast<WPARAM>(font_body_), TRUE);
+    SendMessageW(list_profiles_, LB_SETITEMHEIGHT, 0, 48);
 
     // Initialize System Tray
     tray_icon_ = std::make_unique<tray::TrayIcon>(hwnd_, 1);
@@ -445,6 +563,7 @@ bool MainWindow::create(const std::wstring& title, int width, int height) {
     }
 
     switch_tab(NavTab::Dashboard);
+    layout_controls();
     query_memory_stats();
     return true;
 }
@@ -462,6 +581,66 @@ void MainWindow::query_memory_stats() {
         ram_working_set_kb_ = pmc.WorkingSetSize / 1024;
         ram_peak_working_set_kb_ = pmc.PeakWorkingSetSize / 1024;
     }
+}
+
+void MainWindow::layout_controls() {
+    if (!hwnd_) return;
+
+    RECT client{};
+    GetClientRect(hwnd_, &client);
+    const int client_width = client.right - client.left;
+    const int client_height = client.bottom - client.top;
+    constexpr int content_x = 260;
+    constexpr int content_top = 126;
+    constexpr int right_margin = 32;
+    const int content_width = (std::max)(320, client_width - content_x - right_margin);
+    auto place = [](HWND control, int x, int y, int width, int height) {
+        if (control) SetWindowPos(control, nullptr, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
+    };
+
+    place(btn_refresh_, client_width - 190, 25, 158, 42);
+
+    const std::array<HWND, 7> dpi_buttons{
+        btn_dpi_400_, btn_dpi_800_, btn_dpi_1200_, btn_dpi_1600_,
+        btn_dpi_2400_, btn_dpi_3200_, btn_dpi_6400_
+    };
+    const int dpi_gap = 10;
+    const int dpi_button_width = (content_width - dpi_gap * 6) / 7;
+    const int dpi_y = content_top + 318;
+    for (size_t i = 0; i < dpi_buttons.size(); ++i) {
+        place(dpi_buttons[i], content_x + static_cast<int>(i) * (dpi_button_width + dpi_gap), dpi_y, dpi_button_width, 44);
+    }
+
+    place(slider_dpi_, content_x + 6, content_top + 424, content_width - 12, 34);
+    place(btn_dpi_minus_, content_x, content_top + 488, 72, 42);
+    place(edit_dpi_custom_, content_x + 84, content_top + 488, 120, 42);
+    place(btn_dpi_plus_, content_x + 216, content_top + 488, 72, 42);
+    place(btn_dpi_apply_, content_x + 304, content_top + 488, 190, 42);
+    place(btn_dpi_reset_, content_x + 508, content_top + 488, 100, 42);
+
+    const std::array<HWND, 4> rate_buttons{ btn_rate_125_, btn_rate_250_, btn_rate_500_, btn_rate_1000_ };
+    const int rate_gap = 14;
+    const int rate_width = (content_width - rate_gap * 3) / 4;
+    for (size_t i = 0; i < rate_buttons.size(); ++i) {
+        place(rate_buttons[i], content_x + static_cast<int>(i) * (rate_width + rate_gap), content_top + 308, rate_width, 86);
+    }
+
+    const int profile_list_width = (std::max)(280, content_width * 2 / 3);
+    place(list_profiles_, content_x + 18, content_top + 132, profile_list_width, (std::max)(180, client_height - content_top - 196));
+    const int actions_x = content_x + profile_list_width + 42;
+    const int action_width = (std::max)(150, content_width - profile_list_width - 42);
+    place(btn_prof_switch_, actions_x, content_top + 132, action_width, 42);
+    place(btn_prof_new_, actions_x, content_top + 186, action_width, 42);
+    place(btn_prof_duplicate_, actions_x, content_top + 240, action_width, 42);
+    place(btn_prof_delete_, actions_x, content_top + 294, action_width, 42);
+    place(btn_prof_export_, actions_x, content_top + 372, action_width, 42);
+    place(btn_prof_import_, actions_x, content_top + 426, action_width, 42);
+
+    place(chk_startup_, content_x + 24, content_top + 138, content_width - 48, 36);
+    place(chk_min_tray_, content_x + 24, content_top + 194, content_width - 48, 36);
+    place(chk_close_tray_, content_x + 24, content_top + 250, content_width - 48, 36);
+    place(chk_notify_, content_x + 24, content_top + 306, content_width - 48, 36);
+    place(btn_save_settings_, content_x + 24, content_top + 378, 190, 44);
 }
 
 LRESULT CALLBACK MainWindow::WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
@@ -483,6 +662,18 @@ LRESULT CALLBACK MainWindow::WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPA
 
 LRESULT MainWindow::handle_message(UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
+        case WM_SIZE:
+            layout_controls();
+            InvalidateRect(hwnd_, nullptr, TRUE);
+            return 0;
+
+        case WM_GETMINMAXINFO: {
+            auto* limits = reinterpret_cast<MINMAXINFO*>(lParam);
+            limits->ptMinTrackSize.x = 920;
+            limits->ptMinTrackSize.y = 740;
+            return 0;
+        }
+
         case WM_PAINT: {
             PAINTSTRUCT ps;
             HDC hdc = BeginPaint(hwnd_, &ps);
@@ -491,13 +682,53 @@ LRESULT MainWindow::handle_message(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
 
+        case WM_DRAWITEM: {
+            const auto* item = reinterpret_cast<const DRAWITEMSTRUCT*>(lParam);
+            if (item && item->CtlType == ODT_LISTBOX && item->CtlID == ID_LIST_PROFILES) {
+                const bool selected = (item->itemState & ODS_SELECTED) != 0;
+                HBRUSH item_brush = CreateSolidBrush(selected ? kPanelRaised : kPanel);
+                FillRect(item->hDC, &item->rcItem, item_brush);
+                DeleteObject(item_brush);
+                wchar_t text[512]{};
+                SendMessageW(item->hwndItem, LB_GETTEXT, item->itemID, reinterpret_cast<LPARAM>(text));
+                draw_text(item->hDC, font_body_, selected ? kAccent : kText, text,
+                    RECT{ item->rcItem.left + 14, item->rcItem.top, item->rcItem.right - 12, item->rcItem.bottom },
+                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                return TRUE;
+            }
+            if (item && item->CtlType == ODT_BUTTON) {
+                bool checked = false;
+                switch (item->CtlID) {
+                    case ID_CHK_STARTUP: checked = start_with_windows_; break;
+                    case ID_CHK_MIN_TRAY: checked = minimize_to_tray_; break;
+                    case ID_CHK_CLOSE_TRAY: checked = close_to_tray_; break;
+                    case ID_CHK_NOTIFY: checked = show_notifications_; break;
+                    default: break;
+                }
+                draw_owner_button(*item, checked);
+                return TRUE;
+            }
+            break;
+        }
+
+        case WM_CTLCOLOREDIT:
+        case WM_CTLCOLORLISTBOX: {
+            HDC control_dc = reinterpret_cast<HDC>(wParam);
+            SetTextColor(control_dc, kText);
+            SetBkColor(control_dc, kPanel);
+            return reinterpret_cast<LRESULT>(card_brush_);
+        }
+
+        case WM_CTLCOLORSCROLLBAR:
+            return reinterpret_cast<LRESULT>(sidebar_brush_);
+
         case WM_LBUTTONDOWN: {
             int x = LOWORD(lParam);
             int y = HIWORD(lParam);
 
             // Check if click was inside sidebar navigation tabs
-            if (x < 200 && y >= 80 && y < 80 + 6 * 44) {
-                int clicked_tab = (y - 80) / 44;
+            if (x < 232 && y >= 132 && y < 132 + 6 * 50) {
+                int clicked_tab = (y - 132) / 50;
                 if (clicked_tab >= 0 && clicked_tab <= 5) {
                     switch_tab(static_cast<NavTab>(clicked_tab));
                     return 0;
@@ -517,7 +748,13 @@ LRESULT MainWindow::handle_message(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         case WM_COMMAND: {
             WORD id = LOWORD(wParam);
 
-            if (id == ID_BTN_REFRESH || id == tray::TrayIcon::ID_TRAY_REFRESH) {
+            if (id >= ID_CHK_STARTUP && id <= ID_CHK_NOTIFY) {
+                if (id == ID_CHK_STARTUP) start_with_windows_ = !start_with_windows_;
+                else if (id == ID_CHK_MIN_TRAY) minimize_to_tray_ = !minimize_to_tray_;
+                else if (id == ID_CHK_CLOSE_TRAY) close_to_tray_ = !close_to_tray_;
+                else show_notifications_ = !show_notifications_;
+                InvalidateRect(reinterpret_cast<HWND>(lParam), nullptr, TRUE);
+            } else if (id == ID_BTN_REFRESH || id == tray::TrayIcon::ID_TRAY_REFRESH) {
                 if (device_service_) {
                     device_service_->refresh_devices();
                 }
@@ -818,35 +1055,21 @@ void MainWindow::on_paint(HDC hdc) {
     FillRect(mem_dc, &client_rc, bg_brush_);
     SetBkMode(mem_dc, TRANSPARENT);
 
-    // 1. Render Left Sidebar Navigation
     render_sidebar(mem_dc, height);
 
-    // 2. Render Page Content
-    int page_x = 210;
-    int page_y = 20;
-    int page_w = width - page_x - 20;
-    int page_h = height - page_y - 20;
+    RECT topbar{ 232, 0, width, 88 };
+    FillRect(mem_dc, &topbar, header_brush_);
+    SelectObject(mem_dc, border_pen_);
+    MoveToEx(mem_dc, topbar.left, topbar.bottom - 1, nullptr);
+    LineTo(mem_dc, topbar.right, topbar.bottom - 1);
+    draw_text(mem_dc, font_mono_, kMuted, L"DEVICE CONTROL  /  WINDOWS", RECT{ 260, 28, 520, 52 });
 
-    switch (active_tab_) {
-        case NavTab::Dashboard:
-            render_page_dashboard(mem_dc, page_x, page_y, page_w, page_h);
-            break;
-        case NavTab::Dpi:
-            render_page_dpi(mem_dc, page_x, page_y, page_w, page_h);
-            break;
-        case NavTab::PollingRate:
-            render_page_polling_rate(mem_dc, page_x, page_y, page_w, page_h);
-            break;
-        case NavTab::Profiles:
-            render_page_profiles(mem_dc, page_x, page_y, page_w, page_h);
-            break;
-        case NavTab::DeviceInfo:
-            render_page_device_info(mem_dc, page_x, page_y, page_w, page_h);
-            break;
-        case NavTab::Settings:
-            render_page_settings(mem_dc, page_x, page_y, page_w, page_h);
-            break;
-    }
+    const int page_x = 260;
+    const int page_y = 116;
+    const int page_w = (std::max)(320, width - page_x - 32);
+    const int page_h = (std::max)(260, height - page_y - 24);
+
+    render_workspace(mem_dc, page_x, page_y, page_w, page_h);
 
     BitBlt(hdc, 0, 0, width, height, mem_dc, 0, 0, SRCCOPY);
 
@@ -856,76 +1079,62 @@ void MainWindow::on_paint(HDC hdc) {
 }
 
 void MainWindow::render_sidebar(HDC mem_dc, int height) {
-    RECT sb_rc{ 0, 0, 200, height };
+    RECT sb_rc{ 0, 0, 232, height };
     FillRect(mem_dc, &sb_rc, sidebar_brush_);
 
-    // Right border divider
     SelectObject(mem_dc, border_pen_);
-    MoveToEx(mem_dc, 200, 0, nullptr);
-    LineTo(mem_dc, 200, height);
+    MoveToEx(mem_dc, 231, 0, nullptr);
+    LineTo(mem_dc, 231, height);
 
-    // Brand header
-    RECT brand_rc{ 16, 20, 190, 48 };
-    SelectObject(mem_dc, font_title_);
-    SetTextColor(mem_dc, RGB(240, 246, 252));
-    DrawTextW(mem_dc, L"MouseControl", -1, &brand_rc, DT_LEFT | DT_TOP);
+    RECT mark{ 22, 24, 58, 60 };
+    HBRUSH mark_brush = CreateSolidBrush(kAccent);
+    HGDIOBJ old_mark_brush = SelectObject(mem_dc, mark_brush);
+    HGDIOBJ old_mark_pen = SelectObject(mem_dc, GetStockObject(NULL_PEN));
+    RoundRect(mem_dc, mark.left, mark.top, mark.right, mark.bottom, 10, 10);
+    SelectObject(mem_dc, old_mark_brush);
+    SelectObject(mem_dc, old_mark_pen);
+    DeleteObject(mark_brush);
+    draw_text(mem_dc, font_bold_, kCanvas, L"M", RECT{ 22, 31, 58, 55 }, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    draw_text(mem_dc, font_bold_, kText, L"MouseControl", RECT{ 70, 25, 218, 48 });
+    draw_text(mem_dc, font_mono_, kMuted, L"PRECISION SUITE  /  1.0", RECT{ 70, 47, 220, 65 });
+    draw_text(mem_dc, font_mono_, kMuted, L"YOUR DEVICES", RECT{ 22, 101, 210, 121 });
 
-    RECT ver_rc{ 16, 46, 190, 64 };
-    SelectObject(mem_dc, font_mono_);
-    SetTextColor(mem_dc, RGB(139, 148, 158));
-    DrawTextW(mem_dc, L"v0.1.0 \u2014 Win11 Native", -1, &ver_rc, DT_LEFT | DT_TOP);
-
-    // Navigation Tab items
     const wchar_t* tab_names[] = {
         L"Dashboard",
-        L"DPI Sensitivity",
-        L"Polling Rate",
+        L"DPI tuning",
+        L"Polling rate",
         L"Profiles",
-        L"Device Info",
-        L"Settings"
+        L"Device details",
+        L"Preferences"
     };
 
-    int tab_y = 80;
+    int tab_y = 132;
     for (int i = 0; i < 6; ++i) {
         bool is_active = (static_cast<int>(active_tab_) == i);
-        RECT item_rc{ 10, tab_y, 190, tab_y + 36 };
+        RECT item_rc{ 12, tab_y, 220, tab_y + 42 };
 
         if (is_active) {
-            SelectObject(mem_dc, card_active_brush_);
-            SelectObject(mem_dc, accent_pen_);
-            RoundRect(mem_dc, item_rc.left, item_rc.top, item_rc.right, item_rc.bottom, 6, 6);
-            SetTextColor(mem_dc, RGB(88, 166, 255)); // Bright Blue
-            SelectObject(mem_dc, font_bold_);
+            draw_panel(mem_dc, item_rc, card_active_brush_, border_pen_, 9);
+            RECT marker{ item_rc.left, item_rc.top + 10, item_rc.left + 3, item_rc.bottom - 10 };
+            HBRUSH marker_brush = CreateSolidBrush(kAccent);
+            FillRect(mem_dc, &marker, marker_brush);
+            DeleteObject(marker_brush);
+            draw_text(mem_dc, font_bold_, kAccent, tab_names[i], RECT{ 30, tab_y + 10, 210, tab_y + 34 });
         } else {
-            SetTextColor(mem_dc, RGB(139, 148, 158));
-            SelectObject(mem_dc, font_body_);
+            draw_text(mem_dc, font_body_, kMuted, tab_names[i], RECT{ 30, tab_y + 10, 210, tab_y + 34 });
         }
-
-        RECT text_rc{ item_rc.left + 14, item_rc.top + 8, item_rc.right - 10, item_rc.bottom - 4 };
-        DrawTextW(mem_dc, tab_names[i], -1, &text_rc, DT_LEFT | DT_TOP);
-
-        tab_y += 44;
+        tab_y += 50;
     }
 
-    // Bottom Resource Monitor card in sidebar
     query_memory_stats();
-    RECT mem_rc{ 10, height - 70, 190, height - 15 };
-    SelectObject(mem_dc, card_brush_);
-    SelectObject(mem_dc, border_pen_);
-    RoundRect(mem_dc, mem_rc.left, mem_rc.top, mem_rc.right, mem_rc.bottom, 6, 6);
-
-    SelectObject(mem_dc, font_mono_);
-    SetTextColor(mem_dc, RGB(63, 185, 80)); // Emerald
+    RECT mem_rc{ 14, height - 94, 218, height - 14 };
+    draw_panel(mem_dc, mem_rc, card_brush_, border_pen_, 10);
     std::wstring mem_str = std::format(L"RAM: {:.1f} MB", ram_working_set_kb_ / 1024.0f);
-    RECT m1{ mem_rc.left + 8, mem_rc.top + 8, mem_rc.right - 8, mem_rc.top + 24 };
-    DrawTextW(mem_dc, mem_str.c_str(), -1, &m1, DT_LEFT | DT_TOP);
-
-    SetTextColor(mem_dc, RGB(139, 148, 158));
-    RECT m2{ mem_rc.left + 8, mem_rc.top + 28, mem_rc.right - 8, mem_rc.bottom - 4 };
-    DrawTextW(mem_dc, L"CPU: 0.0% (Idle)", -1, &m2, DT_LEFT | DT_TOP);
+    draw_text(mem_dc, font_mono_, kAccent, mem_str.c_str(), RECT{ 26, mem_rc.top + 13, 208, mem_rc.top + 32 });
+    draw_text(mem_dc, font_mono_, kMuted, L"BACKGROUND: IDLE", RECT{ 26, mem_rc.top + 44, 208, mem_rc.top + 64 });
 }
 
-void MainWindow::render_page_dashboard(HDC mem_dc, int x, int y, int width, int height) {
+void MainWindow::render_page_dashboard(HDC mem_dc, int x, int y, int width, [[maybe_unused]] int height) {
     // Title
     RECT t_rc{ x, y, x + width - 180, y + 30 };
     SelectObject(mem_dc, font_header_);
@@ -1054,7 +1263,7 @@ void MainWindow::render_page_dashboard(HDC mem_dc, int x, int y, int width, int 
     }
 }
 
-void MainWindow::render_page_dpi(HDC mem_dc, int x, int y, int width, int height) {
+void MainWindow::render_page_dpi(HDC mem_dc, int x, int y, int width, [[maybe_unused]] int height) {
     RECT t_rc{ x, y, x + width, y + 30 };
     SelectObject(mem_dc, font_header_);
     SetTextColor(mem_dc, RGB(240, 246, 252));
@@ -1099,7 +1308,7 @@ void MainWindow::render_page_dpi(HDC mem_dc, int x, int y, int width, int height
     DrawTextW(mem_dc, L"Fine Numeric Adjustment:", -1, &s_lbl, DT_LEFT | DT_TOP);
 }
 
-void MainWindow::render_page_polling_rate(HDC mem_dc, int x, int y, int width, int height) {
+void MainWindow::render_page_polling_rate(HDC mem_dc, int x, int y, int width, [[maybe_unused]] int height) {
     RECT t_rc{ x, y, x + width, y + 30 };
     SelectObject(mem_dc, font_header_);
     SetTextColor(mem_dc, RGB(240, 246, 252));
@@ -1132,7 +1341,7 @@ void MainWindow::render_page_polling_rate(HDC mem_dc, int x, int y, int width, i
     DrawTextW(mem_dc, L"Available Hardware Rates (Click to configure):", -1, &o_lbl, DT_LEFT | DT_TOP);
 }
 
-void MainWindow::render_page_profiles(HDC mem_dc, int x, int y, int width, int height) {
+void MainWindow::render_page_profiles(HDC mem_dc, int x, int y, int width, [[maybe_unused]] int height) {
     RECT t_rc{ x, y, x + width, y + 30 };
     SelectObject(mem_dc, font_header_);
     SetTextColor(mem_dc, RGB(240, 246, 252));
@@ -1149,7 +1358,7 @@ void MainWindow::render_page_profiles(HDC mem_dc, int x, int y, int width, int h
     DrawTextW(mem_dc, L"Saved Profiles:", -1, &list_lbl, DT_LEFT | DT_TOP);
 }
 
-void MainWindow::render_page_device_info(HDC mem_dc, int x, int y, int width, int height) {
+void MainWindow::render_page_device_info(HDC mem_dc, int x, int y, int width, [[maybe_unused]] int height) {
     RECT t_rc{ x, y, x + width, y + 30 };
     SelectObject(mem_dc, font_header_);
     SetTextColor(mem_dc, RGB(240, 246, 252));
@@ -1197,7 +1406,7 @@ void MainWindow::render_page_device_info(HDC mem_dc, int x, int y, int width, in
     }
 }
 
-void MainWindow::render_page_settings(HDC mem_dc, int x, int y, int width, int height) {
+void MainWindow::render_page_settings(HDC mem_dc, int x, int y, int width, [[maybe_unused]] int height) {
     RECT t_rc{ x, y, x + width, y + 30 };
     SelectObject(mem_dc, font_header_);
     SetTextColor(mem_dc, RGB(240, 246, 252));
@@ -1213,6 +1422,221 @@ void MainWindow::render_page_settings(HDC mem_dc, int x, int y, int width, int h
     SelectObject(mem_dc, card_brush_);
     SelectObject(mem_dc, border_pen_);
     RoundRect(mem_dc, card_rc.left, card_rc.top, card_rc.right, card_rc.bottom, 10, 10);
+}
+
+void MainWindow::render_workspace(HDC dc, int x, int y, int width, int height) {
+    const wchar_t* titles[] = {
+        L"Overview", L"DPI tuning", L"Polling rate", L"Profiles", L"Device details", L"Preferences"
+    };
+    const wchar_t* subtitles[] = {
+        L"Your mouse, tuned to your play style.",
+        L"Find the sensitivity that feels right.",
+        L"Choose how often your mouse reports movement.",
+        L"Save, switch and share your setups.",
+        L"Hardware identity and connection diagnostics.",
+        L"Make MouseControl work the way you do."
+    };
+    const size_t tab = static_cast<size_t>(active_tab_);
+    draw_text(dc, font_header_, kText, titles[tab], RECT{ x, y, x + width, y + 38 });
+    draw_text(dc, font_body_, kMuted, subtitles[tab], RECT{ x, y + 42, x + width, y + 64 });
+
+    auto active = device_service_ ? device_service_->get_active_device() : std::nullopt;
+    auto panel = [&](RECT rect, bool raised = false) {
+        draw_panel(dc, rect, raised ? card_active_brush_ : card_brush_, border_pen_);
+    };
+
+    if (active_tab_ == NavTab::Dashboard) {
+        const int top = y + 82;
+        panel(RECT{ x, top, x + width, top + 224 });
+        RECT accent{ x + 1, top + 18, x + 4, top + 206 };
+        HBRUSH accent_brush = CreateSolidBrush(kAccent);
+        FillRect(dc, &accent, accent_brush);
+        DeleteObject(accent_brush);
+
+        if (active) {
+            const auto& dev = *active;
+            const bool supported = dev.adapter_name() == "AjazzAdapter";
+            draw_text(dc, font_bold_, kText, infra::hid::WindowsHidEnumerator::utf8_to_wide(dev.name()).c_str(),
+                RECT{ x + 24, top + 18, x + width - 24, top + 46 });
+            draw_text(dc, font_body_, supported ? kGreen : kAccent, L"●  CONNECTED",
+                RECT{ x + 24, top + 50, x + 180, top + 72 });
+            const std::wstring details = std::format(L"{}   /   {}   /   {}",
+                infra::hid::WindowsHidEnumerator::utf8_to_wide(dev.manufacturer()),
+                infra::hid::WindowsHidEnumerator::utf8_to_wide(std::string(core::connection_type_to_string(dev.connection_type()))),
+                infra::hid::WindowsHidEnumerator::utf8_to_wide(dev.adapter_name()));
+            draw_text(dc, font_body_, kMuted, details.c_str(),
+                RECT{ x + 24, top + 76, x + width - 24, top + 98 }, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+            const int gap = 14;
+            const int metric_width = (width - 48 - gap * 2) / 3;
+            const std::array<std::wstring, 3> values{
+                std::format(L"{}", dev.current_dpi()),
+                std::format(L"{} Hz", dev.current_polling_rate()),
+                dev.battery_level() >= 0 ? std::format(L"{}%", dev.battery_level()) : L"N/A"
+            };
+            const std::array<const wchar_t*, 3> labels{ L"SENSOR RESOLUTION", L"REPORT FREQUENCY", L"BATTERY LEVEL" };
+            for (int i = 0; i < 3; ++i) {
+                const int left = x + 24 + i * (metric_width + gap);
+                const int metric_top = top + 116;
+                panel(RECT{ left, metric_top, left + metric_width, metric_top + 88 }, true);
+                draw_text(dc, font_mono_, kMuted, labels[static_cast<size_t>(i)],
+                    RECT{ left + 14, metric_top + 12, left + metric_width - 8, metric_top + 30 });
+                draw_text(dc, font_large_stat_, i == 2 ? kGreen : kText, values[static_cast<size_t>(i)].c_str(),
+                    RECT{ left + 14, metric_top + 35, left + metric_width - 8, metric_top + 80 });
+            }
+        } else {
+            draw_text(dc, font_bold_, kText, L"No supported mouse connected",
+                RECT{ x + 26, top + 30, x + width - 24, top + 62 });
+            draw_text(dc, font_body_, kMuted, L"Connect your mouse, then scan for devices to begin configuring it.",
+                RECT{ x + 26, top + 70, x + width - 24, top + 96 });
+        }
+
+        const int status_top = top + 240;
+        panel(RECT{ x, status_top, x + width, status_top + 48 });
+        draw_text(dc, font_body_, status_is_error_ ? kRed : kGreen, (L"●  " + status_message_).c_str(),
+            RECT{ x + 16, status_top + 14, x + width - 16, status_top + 36 },
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+        const int section_top = status_top + 76;
+        draw_text(dc, font_bold_, kText, L"DPI stages", RECT{ x, section_top, x + width, section_top + 24 });
+        draw_text(dc, font_body_, kMuted, L"Quick view of your sensor sensitivity presets.",
+            RECT{ x, section_top + 25, x + width, section_top + 47 });
+        const std::array<int, 6> defaults{ 400, 800, 1200, 1600, 2400, 3200 };
+        const std::vector<core::domain::DpiStage> stages = active ? active->dpi_stages() : std::vector<core::domain::DpiStage>{};
+        const int count = stages.empty() ? 6 : static_cast<int>((std::min)(stages.size(), defaults.size()));
+        const int gap = 12;
+        const int box_width = (width - gap * (count - 1)) / count;
+        const int box_top = section_top + 58;
+        const int current_dpi = active ? active->current_dpi() : staged_dpi_;
+        for (int i = 0; i < count; ++i) {
+            const int dpi = stages.empty() ? defaults[static_cast<size_t>(i)] : stages[static_cast<size_t>(i)].dpi;
+            const bool current = dpi == current_dpi;
+            RECT stage_box{ x + i * (box_width + gap), box_top, x + i * (box_width + gap) + box_width, box_top + 92 };
+            draw_panel(dc, stage_box, current ? card_active_brush_ : card_brush_, current ? accent_pen_ : border_pen_, 12);
+            draw_text(dc, font_mono_, current ? kAccent : kMuted, std::format(L"STAGE 0{}", i + 1).c_str(),
+                RECT{ stage_box.left + 8, stage_box.top + 14, stage_box.right - 8, stage_box.top + 34 }, DT_CENTER | DT_TOP);
+            draw_text(dc, font_bold_, kText, std::format(L"{} DPI", dpi).c_str(),
+                RECT{ stage_box.left + 8, stage_box.top + 46, stage_box.right - 8, stage_box.top + 70 }, DT_CENTER | DT_TOP);
+        }
+        return;
+    }
+
+    if (active_tab_ == NavTab::Dpi) {
+        auto dpi = active ? active->current_dpi() : staged_dpi_;
+        const int top = y + 78;
+        panel(RECT{ x, top, x + width, top + 190 });
+        draw_text(dc, font_mono_, kMuted, L"CURRENT SENSOR RESOLUTION", RECT{ x + 22, top + 20, x + 420, top + 42 });
+        draw_text(dc, font_large_stat_, kAccent, std::format(L"{} DPI", dpi).c_str(),
+            RECT{ x + 22, top + 48, x + 360, top + 100 });
+        draw_text(dc, font_body_, kMuted, L"50 — 26,000 DPI     •     50 DPI increments",
+            RECT{ x + 24, top + 108, x + width - 24, top + 130 });
+
+        RECT meter_bg{ x + 24, top + 151, x + width - 24, top + 159 };
+        HBRUSH meter_brush = CreateSolidBrush(kBorder);
+        FillRect(dc, &meter_bg, meter_brush);
+        DeleteObject(meter_brush);
+        const int meter_width = static_cast<int>((static_cast<double>((std::clamp)(dpi, 50, 26000) - 50) / 25950.0) * (width - 48));
+        RECT meter{ meter_bg.left, meter_bg.top, meter_bg.left + (std::max)(8, meter_width), meter_bg.bottom };
+        HBRUSH fill_brush = CreateSolidBrush(kAccent);
+        FillRect(dc, &meter, fill_brush);
+        DeleteObject(fill_brush);
+
+        draw_text(dc, font_bold_, kText, L"Quick presets", RECT{ x, y + 278, x + width, y + 302 });
+        draw_text(dc, font_body_, kMuted, L"Choose a starting point, then fine-tune below.",
+            RECT{ x, y + 304, x + width, y + 326 });
+        panel(RECT{ x, y + 392, x + width, y + 548 });
+        draw_text(dc, font_bold_, kText, L"Fine adjustment", RECT{ x + 20, y + 408, x + width - 20, y + 432 });
+        draw_text(dc, font_body_, kMuted, L"Adjust in 50 DPI steps or enter a custom sensor value.",
+            RECT{ x + 20, y + 434, x + width - 20, y + 456 });
+        return;
+    }
+
+    if (active_tab_ == NavTab::PollingRate) {
+        const int top = y + 78;
+        panel(RECT{ x, top, x + width, top + 188 });
+        const int rate = active ? active->current_polling_rate() : 1000;
+        draw_text(dc, font_mono_, kMuted, L"ACTIVE REPORT FREQUENCY", RECT{ x + 22, top + 22, x + 400, top + 44 });
+        draw_text(dc, font_large_stat_, kAccent, std::format(L"{} Hz", rate).c_str(),
+            RECT{ x + 22, top + 50, x + 400, top + 104 });
+        draw_text(dc, font_body_, kMuted, std::format(L"One report every {:.1f} ms", 1000.0 / (std::max)(1, rate)).c_str(),
+            RECT{ x + 24, top + 112, x + width - 24, top + 136 });
+
+        draw_text(dc, font_bold_, kText, L"Polling presets", RECT{ x, y + 278, x + width, y + 302 });
+        draw_text(dc, font_body_, kMuted, L"Higher rates can provide more responsive tracking.",
+            RECT{ x, y + 304, x + width, y + 326 });
+        const std::array<int, 4> rates{ 125, 250, 500, 1000 };
+        for (size_t i = 0; i < rates.size(); ++i) {
+            const int left = x + static_cast<int>(i) * (width / 4 + 4);
+            RECT item{ left, y + 318, left + width / 4 - 10, y + 404 };
+            panel(item, rates[i] == rate);
+            draw_text(dc, font_bold_, rates[i] == rate ? kAccent : kText,
+                std::format(L"{} Hz", rates[i]).c_str(), RECT{ item.left + 10, item.top + 20, item.right - 10, item.top + 48 }, DT_CENTER | DT_TOP);
+            draw_text(dc, font_mono_, kMuted, std::format(L"{} ms", 1000 / rates[i]).c_str(),
+                RECT{ item.left + 10, item.top + 52, item.right - 10, item.top + 70 }, DT_CENTER | DT_TOP);
+        }
+        return;
+    }
+
+    if (active_tab_ == NavTab::Profiles) {
+        draw_text(dc, font_bold_, kText, L"Saved profiles", RECT{ x + 18, y + 96, x + width - 18, y + 122 });
+        draw_text(dc, font_body_, kMuted, L"Stored locally • import and export as JSON",
+            RECT{ x + 18, y + 124, x + width - 18, y + 146 });
+        panel(RECT{ x, y + 78, x + width, y + height - 12 });
+        return;
+    }
+
+    if (active_tab_ == NavTab::DeviceInfo) {
+        const int top = y + 78;
+        panel(RECT{ x, top, x + width, y + height - 12 });
+        draw_text(dc, font_mono_, kMuted, L"DEVICE  /  CONNECTION  /  HARDWARE IDS",
+            RECT{ x + 20, top + 18, x + width - 20, top + 40 });
+        if (devices_.empty()) {
+            draw_text(dc, font_bold_, kText, L"No devices discovered",
+                RECT{ x + 20, top + 64, x + width - 20, top + 90 });
+            draw_text(dc, font_body_, kMuted, L"Use Scan devices to inspect connected mouse hardware.",
+                RECT{ x + 20, top + 96, x + width - 20, top + 120 });
+            return;
+        }
+        int row_y = top + 58;
+        for (const auto& dev : devices_) {
+            if (row_y + 88 > y + height - 24) break;
+            const bool supported = dev.adapter_name() == "AjazzAdapter";
+            const auto details = std::format(L"{}   /   {}   /   {}",
+                infra::hid::WindowsHidEnumerator::utf8_to_wide(dev.manufacturer()),
+                infra::hid::WindowsHidEnumerator::utf8_to_wide(std::string(core::connection_type_to_string(dev.connection_type()))),
+                infra::hid::WindowsHidEnumerator::utf8_to_wide(dev.adapter_name()));
+            draw_text(dc, font_bold_, supported ? kGreen : kText,
+                infra::hid::WindowsHidEnumerator::utf8_to_wide(dev.name()).c_str(),
+                RECT{ x + 20, row_y, x + width - 20, row_y + 24 }, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
+            draw_text(dc, font_body_, kMuted, details.c_str(),
+                RECT{ x + 20, row_y + 26, x + width - 20, row_y + 48 }, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
+            if (!dev.interfaces().empty()) {
+                const auto& iface = dev.interfaces().front();
+                draw_text(dc, font_mono_, kMuted,
+                    std::format(L"VID {:04X}   PID {:04X}   USAGE PAGE {:04X}   USAGE {:04X}",
+                        iface.vendor_id, iface.product_id, iface.usage_page, iface.usage).c_str(),
+                    RECT{ x + 20, row_y + 52, x + width - 20, row_y + 72 }, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
+            }
+            SelectObject(dc, border_pen_);
+            MoveToEx(dc, x + 20, row_y + 82, nullptr);
+            LineTo(dc, x + width - 20, row_y + 82);
+            row_y += 100;
+        }
+        return;
+    }
+
+    if (active_tab_ == NavTab::Settings) {
+        const int top = y + 78;
+        panel(RECT{ x, top, x + width, top + 454 });
+        draw_text(dc, font_bold_, kText, L"Startup & background behavior",
+            RECT{ x + 22, top + 20, x + width - 22, top + 46 });
+        draw_text(dc, font_body_, kMuted, L"Choose when the app launches and how it behaves in the system tray.",
+            RECT{ x + 22, top + 48, x + width - 22, top + 72 });
+        SelectObject(dc, border_pen_);
+        MoveToEx(dc, x + 22, top + 98, nullptr);
+        LineTo(dc, x + width - 22, top + 98);
+        draw_text(dc, font_mono_, kMuted, L"APPLICATION", RECT{ x + 22, top + 112, x + width - 22, top + 132 });
+    }
 }
 
 } // namespace mc::presentation::windows

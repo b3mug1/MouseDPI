@@ -59,8 +59,9 @@ graph TD
 ### 2.4 Presentation Layer (`src/presentation/`)
 - **Pure Win32 GDI Rendering:**
   - Double-buffered memory DC to eliminate all visual flickering.
-  - Dark theme palette (`#0E1116`, `#161B22`, `#1F242C`, `#2F81F7`).
-  - Standard Win32 Common Controls (`Trackbar`, `Edit`, `Button`, `ListBox`) styled for dark mode.
+  - Responsive dark gaming-console palette (`#0D1117`, `#10151D`, `#171E28`, `#BEF264`).
+  - Custom-drawn navigation, cards, buttons, checkboxes, and profile rows, with dark edit and trackbar controls.
+  - Windows immersive dark title bar and resizable workspace layout.
 - **System Tray:**
   - `Shell_NotifyIconW` (version 4) with context menus, active checkmarks, and low-battery toasts.
 - **Single-Instance Mutex:**
