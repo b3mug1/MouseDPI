@@ -27,7 +27,7 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-vcpkg-
 
-    - name: Fetch vcpkg baseline
+    - name: Checkout vcpkg baseline
       shell: pwsh
       run: |
         $baseline = (Get-Content vcpkg.json | ConvertFrom-Json).'builtin-baseline'
@@ -35,9 +35,13 @@ jobs:
         if ($LASTEXITCODE -ne 0) {
           throw "Failed to fetch vcpkg baseline commit $baseline"
         }
-        git -C $env:VCPKG_INSTALLATION_ROOT cat-file -e "$($baseline):versions/baseline.json"
+        git -C $env:VCPKG_INSTALLATION_ROOT checkout --detach $baseline
         if ($LASTEXITCODE -ne 0) {
-          throw "vcpkg baseline commit $baseline does not contain versions/baseline.json"
+          throw "Failed to check out vcpkg baseline commit $baseline"
+        }
+        $checkedOutCommit = git -C $env:VCPKG_INSTALLATION_ROOT rev-parse HEAD
+        if ($LASTEXITCODE -ne 0 -or $checkedOutCommit -ne $baseline) {
+          throw "vcpkg checkout does not match manifest baseline $baseline"
         }
 
     - name: Configure CMake

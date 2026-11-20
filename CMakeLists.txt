@@ -118,6 +118,16 @@ target_link_libraries(ble_probe PRIVATE
     windowsapp.lib
 )
 
+# 2d. Standalone Windows Setup Executable (Phase 9)
+add_executable(MouseControl_Setup WIN32
+    src/tools/installer/installer_main.cpp
+    installer_payload/installer.rc
+)
+
+target_include_directories(MouseControl_Setup PRIVATE
+    src/tools/installer
+)
+
 # 3. Unit Tests
 enable_testing()
 
