@@ -15,8 +15,8 @@ $SourceDir = Split-Path -Parent $PSScriptRoot
 
 # Locate built binary directory or package directory
 $CandidateDirs = @(
-    Join-Path $SourceDir "build\Release",
-    Join-Path $PSScriptRoot "bin",
+    (Join-Path $SourceDir "build\Release"),
+    (Join-Path $PSScriptRoot "bin"),
     $SourceDir
 )
 
